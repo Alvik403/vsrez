@@ -65,6 +65,18 @@
         "2": "Удорожание",
         "3": "Техническое"
       },
+      "breakdown_sheet": "Виды вскрытия 2",
+      "breakdown_start_row": 6,
+      "breakdown_type_template_row": 6,
+      "breakdown_comment_template_row": 7,
+      "breakdown_reason_template_row": 8,
+      "breakdown_total_template_row": 32,
+      "breakdown_total_label": "Общий итог",
+      "type_order": [
+        "Идеологическое изменение",
+        "Техническое",
+        "Удорожание"
+      ],
       "new_block_fill_colors": [
         "E2F0D9",
         "DDEBF7",

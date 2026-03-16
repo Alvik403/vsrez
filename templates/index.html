@@ -14,40 +14,22 @@
             color: #10233f;
         }
         .wrap {
-            max-width: 1320px;
+            max-width: 760px;
             margin: 0 auto;
             padding: 24px;
         }
-        .layout {
-            display: grid;
-            grid-template-columns: 380px minmax(0, 1fr);
-            gap: 20px;
-            align-items: start;
-        }
-        .box, .panel {
+        .box {
             border-radius: 16px;
             border: 1px solid #cfe1f7;
             background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
             box-shadow: 0 14px 30px rgba(33, 93, 168, 0.08);
-        }
-        .box {
-            padding: 20px;
-            position: sticky;
-            top: 18px;
-        }
-        .panel {
             padding: 20px;
         }
-        h1, h2, h3 { margin: 0; }
+        h1 { margin: 0; }
         h1 {
             font-size: 22px;
             color: #123c73;
             margin-bottom: 10px;
-        }
-        h2 {
-            font-size: 16px;
-            color: #123c73;
-            margin-bottom: 12px;
         }
         .lead {
             margin: 0 0 18px;
@@ -64,7 +46,7 @@
             margin-bottom: 6px;
             color: #5a7696;
         }
-        input[type="file"], textarea {
+        input[type="file"] {
             width: 100%;
             border-radius: 10px;
             border: 1px solid #c7dcf5;
@@ -81,12 +63,6 @@
             background: #eaf4ff;
             color: #1d4ed8;
             cursor: pointer;
-        }
-        textarea {
-            min-height: 340px;
-            resize: vertical;
-            font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-            line-height: 1.45;
         }
         .btn-row {
             display: flex;
@@ -124,116 +100,46 @@
             color: #355375;
             white-space: pre-wrap;
         }
-        .hint, .list {
-            font-size: 13px;
-            line-height: 1.55;
-            color: #516b8b;
-        }
-        .code {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 999px;
-            background: #e8f1ff;
-            color: #1d4ed8;
-            font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-            font-size: 12px;
-        }
-        .pre {
-            margin: 0;
-            border-radius: 12px;
-            background: #0f172a;
-            color: #e2e8f0;
-            padding: 14px;
-            overflow: auto;
-            font-size: 12px;
-            line-height: 1.45;
-        }
-        @media (max-width: 980px) {
-            .layout { grid-template-columns: 1fr; }
-            .box { position: static; }
+        @media (max-width: 640px) {
+            .wrap { padding: 16px; }
         }
     </style>
 </head>
 <body>
     <div class="wrap">
-        <div class="layout">
-            <section class="box">
-                <h1>Консолидация Excel-файлов</h1>
-                <p class="lead">
-                    Шаблон теперь можно хранить внутри проекта. Приложение берёт его из конфига по умолчанию,
-                    а загрузка файла шаблона нужна только если вы хотите временно переопределить базовый файл.
-                </p>
+        <section class="box">
+            <h1>Консолидация Excel-файлов</h1>
+            <p class="lead">Загрузите исходные файлы и, при необходимости, свой шаблон или JSON-конфиг.</p>
 
-                <form id="consolidationForm">
-                    <div class="field">
-                        <label for="templateFile">Шаблон (.xlsx / .xlsm, необязательно)</label>
-                        <input id="templateFile" name="template_file" type="file" accept=".xlsx,.xlsm">
-                    </div>
-
-                    <div class="field">
-                        <label for="sourceFiles">Исходные файлы (.xlsx / .xlsm)</label>
-                        <input id="sourceFiles" name="source_files" type="file" accept=".xlsx,.xlsm" multiple required>
-                    </div>
-
-                    <div class="field">
-                        <label for="configFile">JSON-конфиг (необязательно)</label>
-                        <input id="configFile" name="config_file" type="file" accept=".json">
-                    </div>
-
-                    <div class="btn-row">
-                        <button id="submitBtn" class="btn primary" type="submit">Собрать итоговый Excel</button>
-                        <button id="loadConfigBtn" class="btn" type="button">Показать конфиг по умолчанию</button>
-                    </div>
-                </form>
-
-                <div id="statusBox" class="status" style="display:none;"></div>
-            </section>
-
-            <section class="panel">
-                <h2>Конфиг и логика</h2>
-                <p class="hint">
-                    Базовый конфиг лежит в <span class="code">{{ default_config_path }}</span>.
-                    Сейчас логика заточена под лист <span class="code">Справка по резервам</span> и дописывает строки
-                    в блоки ЦФО, сохраняя формулы и оформление.
-                </p>
-                <p class="hint">
-                    Если шаблон не загружен вручную, сервис возьмёт файл из
-                    <span class="code">default_template_path</span>. Для новых блоков ЦФО используется копия существующего
-                    оформления с новым цветом заливки.
-                </p>
+            <form id="consolidationForm">
+                <div class="field">
+                    <label for="templateFile">Шаблон (.xlsx / .xlsm, необязательно)</label>
+                    <input id="templateFile" name="template_file" type="file" accept=".xlsx,.xlsm">
+                </div>
 
                 <div class="field">
-                    <label for="configPreview">Предпросмотр конфига</label>
-                    <textarea id="configPreview" spellcheck="false" placeholder="Нажмите «Показать конфиг по умолчанию»"></textarea>
+                    <label for="sourceFiles">Исходные файлы (.xlsx / .xlsm)</label>
+                    <input id="sourceFiles" name="source_files" type="file" accept=".xlsx,.xlsm" multiple required>
                 </div>
 
-                <h3 style="margin-bottom:10px; color:#123c73;">Схема JSON</h3>
-                <div class="list">
-                    <p><span class="code">default_template_path</span> - встроенный путь до шаблона.</p>
-                    <p><span class="code">source_cols_preset</span> - пресеты колонок в исходных файлах.</p>
-                    <p><span class="code">pages</span> - правила заполнения листа и цветов новых блоков.</p>
+                <div class="field">
+                    <label for="configFile">JSON-конфиг (необязательно)</label>
+                    <input id="configFile" name="config_file" type="file" accept=".json">
                 </div>
 
-                <pre class="pre">{
-  "default_template_path": "Файлы/Шаблон ВСР.xlsm",
-  "pages": [
-    {
-      "mode": "reserves_sheet_v1",
-      "template_sheet": "Справка по резервам ",
-      "source_sheet": "Лист1"
-    }
-  ]
-}</pre>
-            </section>
-        </div>
+                <div class="btn-row">
+                    <button id="submitBtn" class="btn primary" type="submit">Собрать итоговый Excel</button>
+                </div>
+            </form>
+
+            <div id="statusBox" class="status" style="display:none;"></div>
+        </section>
     </div>
 
     <script>
         const form = document.getElementById("consolidationForm");
         const submitBtn = document.getElementById("submitBtn");
-        const loadConfigBtn = document.getElementById("loadConfigBtn");
         const statusBox = document.getElementById("statusBox");
-        const configPreview = document.getElementById("configPreview");
 
         function showStatus(message, isError) {
             statusBox.style.display = "block";
@@ -242,21 +148,6 @@
             statusBox.style.borderColor = isError ? "#fecdd3" : "#d4e6fb";
             statusBox.style.color = isError ? "#9f1239" : "#355375";
         }
-
-        loadConfigBtn.addEventListener("click", async function () {
-            showStatus("Загружаю конфиг по умолчанию...", false);
-            try {
-                const response = await fetch("/api/config/default");
-                const payload = await response.json();
-                if (!response.ok) {
-                    throw new Error(payload.detail || "Не удалось получить конфиг.");
-                }
-                configPreview.value = JSON.stringify(payload, null, 2);
-                showStatus("Конфиг загружен. Его можно сохранить в отдельный JSON и передать вместе с файлами.", false);
-            } catch (error) {
-                showStatus(error.message || "Ошибка загрузки конфига.", true);
-            }
-        });
 
         form.addEventListener("submit", async function (event) {
             event.preventDefault();
