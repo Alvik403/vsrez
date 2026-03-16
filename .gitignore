@@ -30,11 +30,8 @@ Desktop.ini
 # Build / logs
 *.log
 
-# Local Excel inputs/outputs
-Файлы/*.xlsx
-Файлы/результат*.xlsm
-Файлы/result*.xlsm
-Файлы/~$*
+# Local files directory
+Файлы/
 
 # Optional local exports
 result*.xlsx
