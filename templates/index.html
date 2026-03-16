@@ -111,7 +111,7 @@
             <h1>Консолидация Excel-файлов</h1>
             <p class="lead">Загрузите исходные файлы и, при необходимости, свой шаблон или JSON-конфиг.</p>
 
-            <form id="consolidationForm">
+            <form id="consolidationForm" autocomplete="off">
                 <div class="field">
                     <label for="templateFile">Шаблон (.xlsx / .xlsm, необязательно)</label>
                     <input id="templateFile" name="template_file" type="file" accept=".xlsx,.xlsm">
@@ -178,6 +178,7 @@
                 anchor.click();
                 anchor.remove();
                 URL.revokeObjectURL(url);
+                form.reset();
                 showStatus("Готово. Итоговый Excel скачан.", false);
             } catch (error) {
                 showStatus(error.message || "Ошибка обработки.", true);

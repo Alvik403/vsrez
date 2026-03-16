@@ -16,6 +16,13 @@ app = FastAPI(title="Консолидация Excel в шаблон")
 templates = Jinja2Templates(directory="templates")
 
 
+@app.middleware("http")
+async def add_no_store_headers(request: Request, call_next):
+    response = await call_next(request)
+    _apply_no_store_headers(response)
+    return response
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
@@ -58,6 +65,8 @@ async def consolidate(
             detail=f"Исходные файлы должны быть .xlsx или .xlsm: {', '.join(invalid_sources)}.",
         )
 
+    template_bytes = None
+    source_payloads = []
     try:
         config_payload = await config_file.read() if config_file is not None else None
         config = load_app_config(config_payload or None)
@@ -76,6 +85,13 @@ async def consolidate(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Ошибка обработки Excel: {exc}") from exc
+    finally:
+        if template_file is not None:
+            await template_file.close()
+        if config_file is not None:
+            await config_file.close()
+        for upload in source_files:
+            await upload.close()
 
     ascii_filename = _build_ascii_download_name(output_name)
     headers = {
@@ -108,3 +124,9 @@ def _build_ascii_download_name(filename: str) -> str:
     ascii_stem = "".join(ch if ch.isascii() and (ch.isalnum() or ch in "-_.") else "_" for ch in stem)
     ascii_stem = ascii_stem.strip("._") or "result"
     return f"{ascii_stem}{suffix}"
+
+
+def _apply_no_store_headers(response) -> None:
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0, private"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
