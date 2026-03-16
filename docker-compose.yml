@@ -1,0 +1,9 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vs_rez_gp_web
+    ports:
+      - "8000:8000"
+    restart: unless-stopped

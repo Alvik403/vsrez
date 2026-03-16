@@ -1,0 +1,6 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+openpyxl>=3.1
+jinja2>=3.1
+python-multipart>=0.0.9
+pytest>=8.0

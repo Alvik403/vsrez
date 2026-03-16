@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.Python
+.venv/
+venv/
+env/
+
+# Tests and coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Tool caches
+.mypy_cache/
+.ruff_cache/
+
+# Environment files
+.env
+.env.*
+
+# IDE / OS
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
+
+# Build / logs
+*.log
+
+# Local Excel inputs/outputs
+Файлы/*.xlsx
+Файлы/результат*.xlsm
+Файлы/result*.xlsm
+Файлы/~$*
+
+# Optional local exports
+result*.xlsx
+result*.xlsm

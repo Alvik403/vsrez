@@ -1,0 +1,77 @@
+{
+  "default_template_path": "Файлы/Шаблон ВСР.xlsm",
+  "source_cols_preset": {
+    "default": {
+      "project": {
+        "header": "Проект"
+      },
+      "cfo": {
+        "header": "ЦФО"
+      },
+      "date": {
+        "header": "Дата вскрытия"
+      },
+      "amount": {
+        "header": "Сумма вскрытия"
+      },
+      "reserve_pd": {
+        "header": "Резерв уровня ЦФО по ПД"
+      },
+      "reason": {
+        "header": "Причина"
+      },
+      "contractor": {
+        "header": "Контрагент"
+      },
+      "type": {
+        "header": "Тип вскрытия"
+      },
+      "contract": {
+        "header": "Договор"
+      },
+      "reserve_balance": {
+        "header_aliases": [
+          "Остаток резеррва",
+          "Остаток резеррва ",
+          "Остаток резерва",
+          "Остаток резерва "
+        ]
+      },
+      "level": {
+        "header": "Уровень резерва"
+      },
+      "comment": {
+        "header_aliases": [
+          "Комментарий экономиста",
+          " Комментарий экономиста"
+        ]
+      }
+    }
+  },
+  "pages": [
+    {
+      "name": "Справка по резервам",
+      "mode": "reserves_sheet_v1",
+      "template_sheet": "Справка по резервам ",
+      "helper_sheet": "Справка",
+      "helper_start_row": 301,
+      "template_start_row": 7,
+      "source_sheet": "Вскрытие резервов",
+      "source_preset": "default",
+      "source_header_row": 0,
+      "source_start_row": 0,
+      "type_map": {
+        "1": "Идеологическое изменение",
+        "2": "Удорожание",
+        "3": "Техническое"
+      },
+      "new_block_fill_colors": [
+        "E2F0D9",
+        "DDEBF7",
+        "FCE4D6",
+        "FFF2CC",
+        "E4DFEC"
+      ]
+    }
+  ]
+}
