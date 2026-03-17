@@ -8,7 +8,7 @@ from typing import Any
 
 from openpyxl import load_workbook
 from openpyxl.cell.cell import MergedCell
-from openpyxl.styles import PatternFill
+from openpyxl.styles import Alignment, PatternFill
 from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.workbook import Workbook
 from openpyxl.worksheet.worksheet import Worksheet
@@ -155,6 +155,12 @@ def _apply_reserves_page(
         page=page,
         source_records=source_records,
     )
+    cfo_rows = _rewrite_cfo_sheet(
+        template_book=template_book,
+        template_values_book=template_values_book,
+        page=page,
+        source_records=source_records,
+    )
 
     return {
         "name": page_name,
@@ -165,6 +171,7 @@ def _apply_reserves_page(
         "cfo_blocks_total": len(layout["blocks"]),
         "new_cfo_blocks": sum(1 for block in layout["blocks"] if block.get("is_new")),
         "breakdown_rows_written": breakdown_rows,
+        "cfo_sheet_rows_written": cfo_rows,
     }
 
 
@@ -565,6 +572,106 @@ def _rewrite_breakdown_sheet(
     return row_idx - start_row
 
 
+def _rewrite_cfo_sheet(
+    template_book: Workbook,
+    template_values_book: Workbook,
+    page: dict[str, Any],
+    source_records: list[dict[str, Any]],
+) -> int:
+    sheet_name = str(page.get("cfo_sheet", "Справка по ЦФО"))
+    if sheet_name not in template_book.sheetnames:
+        return 0
+
+    sheet = template_book[sheet_name]
+    value_sheet = template_values_book[sheet_name] if sheet_name in template_values_book.sheetnames else sheet
+    style_sheet_name = str(page.get("cfo_style_source_sheet", sheet_name))
+    style_sheet = template_book[style_sheet_name] if style_sheet_name in template_book.sheetnames else sheet
+    start_row = int(page.get("cfo_start_row", 4))
+    cfo_template = _limit_template_columns(_snapshot_row(style_sheet, int(page.get("cfo_group_template_row", 4))), 3)
+    comment_template = _limit_template_columns(_snapshot_row(style_sheet, int(page.get("cfo_comment_template_row", 5))), 3)
+    reason_template = _limit_template_columns(_snapshot_row(style_sheet, int(page.get("cfo_reason_template_row", 6))), 3)
+    total_template = _limit_template_columns(_snapshot_row(style_sheet, int(page.get("cfo_total_template_row", 519))), 3)
+    grouped = _parse_existing_cfo_sheet(
+        sheet=sheet,
+        value_sheet=value_sheet,
+        start_row=start_row,
+        total_label=str(page.get("cfo_total_label", "Общий итог")),
+    )
+    _merge_cfo_source_records(
+        grouped=grouped,
+        source_records=source_records,
+        cfo_template=cfo_template,
+        comment_template=comment_template,
+        reason_template=reason_template,
+    )
+
+    row_idx = start_row
+    max_existing = sheet.max_row
+    for cfo_entry in grouped:
+        _apply_row_template(sheet, row_idx, cfo_template, None)
+        _set_cell_value(sheet, f"A{row_idx}", cfo_entry.get("output_a", f"Вскрытие {cfo_entry['name']}"))
+        cfo_row_idx = row_idx
+        cfo_comment_rows: list[int] = []
+        _set_cell_value(sheet, f"B{row_idx}", None)
+        _set_cell_value(sheet, f"C{row_idx}", cfo_entry.get("output_c"))
+        _clear_cells(sheet, row_idx, ["D"])
+        _set_row_grouping(sheet, row_idx, outline_level=0, hidden=False, collapsed=bool(cfo_entry["comments"]))
+        _format_cfo_row(sheet, row_idx, min_height=cfo_template.get("height"))
+        row_idx += 1
+
+        for comment_entry in cfo_entry["comments"]:
+            _apply_row_template(sheet, row_idx, comment_template, None)
+            _set_cell_value(sheet, f"A{row_idx}", comment_entry.get("output_a", comment_entry["name"]))
+            comment_row_idx = row_idx
+            comment_reason_rows: list[int] = []
+            cfo_comment_rows.append(comment_row_idx)
+            _set_cell_value(sheet, f"B{row_idx}", None)
+            _set_cell_value(sheet, f"C{row_idx}", comment_entry.get("output_c"))
+            _clear_cells(sheet, row_idx, ["D"])
+            _set_row_grouping(sheet, row_idx, outline_level=1, hidden=True, collapsed=bool(comment_entry["reasons"]))
+            _format_cfo_row(sheet, row_idx, min_height=comment_template.get("height"))
+            row_idx += 1
+
+            for reason_entry in comment_entry["reasons"]:
+                _apply_row_template(sheet, row_idx, reason_template, None)
+                _set_cell_value(sheet, f"A{row_idx}", reason_entry.get("output_a", reason_entry["name"]))
+                if reason_entry.get("is_existing"):
+                    _set_cell_value(sheet, f"B{row_idx}", reason_entry.get("output_b"))
+                    output_c = reason_entry.get("output_c")
+                    if _is_formula(output_c) and "VLOOKUP(" in str(output_c).upper():
+                        output_c = f"=VLOOKUP(A{row_idx},Справка!F:H,3,0)"
+                    _set_cell_value(sheet, f"C{row_idx}", output_c)
+                    _set_cell_value(sheet, f"D{row_idx}", reason_entry.get("output_d"))
+                else:
+                    _set_cell_value(sheet, f"B{row_idx}", reason_entry["amount"])
+                    _set_cell_value(sheet, f"C{row_idx}", _project_value_or_blank(reason_entry["projects"]))
+                _clear_cells(sheet, row_idx, ["D"])
+                comment_reason_rows.append(row_idx)
+                _set_row_grouping(sheet, row_idx, outline_level=2, hidden=True, collapsed=False)
+                _format_cfo_row(sheet, row_idx, min_height=reason_template.get("height"))
+                row_idx += 1
+
+            _set_cell_value(sheet, f"B{comment_row_idx}", _build_sum_formula_for_column(comment_reason_rows, "B"))
+
+        _set_cell_value(sheet, f"B{cfo_row_idx}", _build_addition_formula_for_column(cfo_comment_rows, "B"))
+
+    _apply_row_template(sheet, row_idx, total_template, None)
+    _set_cell_value(sheet, f"A{row_idx}", str(page.get("cfo_total_label", "Общий итог")))
+    cfo_rows = [start_row + idx for idx, entry in enumerate(_flatten_breakdown_type_rows(grouped)) if entry == "type"]
+    _set_cell_value(sheet, f"B{row_idx}", _build_addition_formula_for_column(cfo_rows, "B"))
+    _set_cell_value(sheet, f"C{row_idx}", None)
+    _clear_cells(sheet, row_idx, ["D"])
+    _set_row_grouping(sheet, row_idx, outline_level=0, hidden=False, collapsed=False)
+    _format_cfo_row(sheet, row_idx, min_height=total_template.get("height"))
+    row_idx += 1
+
+    for clear_row in range(row_idx, max_existing + 1):
+        _clear_cells(sheet, clear_row, ["A", "B", "C", "D"])
+        _set_row_grouping(sheet, clear_row, outline_level=0, hidden=False, collapsed=False)
+
+    return row_idx - start_row
+
+
 def _parse_existing_breakdown_sheet(
     sheet: Worksheet,
     value_sheet: Worksheet,
@@ -614,6 +721,73 @@ def _parse_existing_breakdown_sheet(
             continue
 
         if outline_level >= 2 and current_type is not None and current_comment is not None:
+            current_comment["reasons"].append(
+                {
+                    "name": label,
+                    "template": _snapshot_row(sheet, row_idx),
+                    "is_existing": True,
+                    "output_a": sheet.cell(row=row_idx, column=1).value,
+                    "output_b": sheet.cell(row=row_idx, column=2).value,
+                    "output_c": sheet.cell(row=row_idx, column=3).value,
+                    "output_d": sheet.cell(row=row_idx, column=4).value,
+                    "amount": 0.0,
+                    "projects": [],
+                    "cfos": [],
+                }
+            )
+
+    return grouped
+
+
+def _parse_existing_cfo_sheet(
+    sheet: Worksheet,
+    value_sheet: Worksheet,
+    start_row: int,
+    total_label: str,
+) -> list[dict[str, Any]]:
+    grouped: list[dict[str, Any]] = []
+    current_cfo: dict[str, Any] | None = None
+    current_comment: dict[str, Any] | None = None
+    total_key = _normalize_key(total_label)
+
+    for row_idx in range(start_row, sheet.max_row + 1):
+        label = _clean_text(value_sheet.cell(row=row_idx, column=1).value)
+        if not label:
+            continue
+        if _normalize_key(label) == total_key:
+            break
+
+        outline_level = int(sheet.row_dimensions[row_idx].outlineLevel or 0)
+
+        if outline_level == 0:
+            cfo_name = label.removeprefix("Вскрытие ").strip() if label.startswith("Вскрытие ") else label
+            current_cfo = {
+                "name": cfo_name,
+                "comments": [],
+                "template": _snapshot_row(sheet, row_idx),
+                "is_existing": True,
+                "output_a": sheet.cell(row=row_idx, column=1).value,
+                "output_c": sheet.cell(row=row_idx, column=3).value,
+                "output_d": sheet.cell(row=row_idx, column=4).value,
+            }
+            grouped.append(current_cfo)
+            current_comment = None
+            continue
+
+        if outline_level == 1 and current_cfo is not None:
+            current_comment = {
+                "name": label,
+                "reasons": [],
+                "template": _snapshot_row(sheet, row_idx),
+                "is_existing": True,
+                "output_a": sheet.cell(row=row_idx, column=1).value,
+                "output_c": sheet.cell(row=row_idx, column=3).value,
+                "output_d": sheet.cell(row=row_idx, column=4).value,
+            }
+            current_cfo["comments"].append(current_comment)
+            continue
+
+        if outline_level >= 2 and current_cfo is not None and current_comment is not None:
             current_comment["reasons"].append(
                 {
                     "name": label,
@@ -697,6 +871,81 @@ def _merge_breakdown_source_records(
         )
         if reason_entry is None:
             comment_entry["reasons"].append(make_reason(record, reason_name))
+            continue
+
+        if not reason_entry.get("is_existing"):
+            reason_entry["amount"] += _to_number(record.get("amount"))
+            _append_unique(reason_entry["projects"], _clean_text(record.get("project")))
+            _append_unique(reason_entry["cfos"], _clean_text(record.get("cfo")))
+
+
+def _merge_cfo_source_records(
+    grouped: list[dict[str, Any]],
+    source_records: list[dict[str, Any]],
+    cfo_template: dict[str, Any],
+    comment_template: dict[str, Any],
+    reason_template: dict[str, Any],
+) -> None:
+    cfo_index = {_normalize_key(entry["name"]): entry for entry in grouped}
+
+    def make_cfo(name: str) -> dict[str, Any]:
+        return {
+            "name": name,
+            "comments": [],
+            "template": _clone_template(cfo_template),
+            "is_existing": False,
+            "output_a": f"Вскрытие {name}",
+        }
+
+    def make_comment(name: str, template: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "name": name,
+            "reasons": [],
+            "template": _clone_template(template),
+            "is_existing": False,
+        }
+
+    def make_reason(record: dict[str, Any], name: str, template: dict[str, Any]) -> dict[str, Any]:
+        project = _clean_text(record.get("project"))
+        cfo = _clean_text(record.get("cfo"))
+        return {
+            "name": name,
+            "template": _clone_template(template),
+            "is_existing": False,
+            "output_b": None,
+            "output_c": None,
+            "output_d": None,
+            "amount": _to_number(record.get("amount")),
+            "projects": [project] if project else [],
+            "cfos": [cfo] if cfo else [],
+        }
+
+    for record in source_records:
+        cfo_name = _clean_text(record.get("cfo")) or "Без ЦФО"
+        comment_name = _clean_text(record.get("comment")) or "Без комментария экономиста"
+        reason_name = _clean_text(record.get("reason")) or "Без причины"
+
+        cfo_key = _normalize_key(cfo_name)
+        cfo_entry = cfo_index.get(cfo_key)
+        if cfo_entry is None:
+            cfo_entry = make_cfo(cfo_name)
+            grouped.append(cfo_entry)
+            cfo_index[cfo_key] = cfo_entry
+
+        comment_entry = next(
+            (entry for entry in cfo_entry["comments"] if _normalize_key(entry["name"]) == _normalize_key(comment_name)),
+            None,
+        )
+        if comment_entry is None:
+            comment_entry = make_comment(comment_name, comment_template)
+            cfo_entry["comments"].append(comment_entry)
+
+        reason_entry = next(
+            (entry for entry in comment_entry["reasons"] if _normalize_key(entry["name"]) == _normalize_key(reason_name)),
+            None,
+        )
+        if reason_entry is None:
+            comment_entry["reasons"].append(make_reason(record, reason_name, reason_template))
             continue
 
         if not reason_entry.get("is_existing"):
@@ -849,6 +1098,26 @@ def _clone_templates(templates: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _clone_template(template: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "height": template["height"],
+        "styles": {c: copy(s) for c, s in template["styles"].items()},
+        "merges": list(template.get("merges", [])),
+    }
+
+
+def _limit_template_columns(template: dict[str, Any], max_col: int) -> dict[str, Any]:
+    return {
+        "height": template["height"],
+        "styles": {col: copy(style) for col, style in template["styles"].items() if col <= max_col},
+        "merges": [
+            (min_col, max_merge_col)
+            for min_col, max_merge_col in template.get("merges", [])
+            if max_merge_col <= max_col
+        ],
+    }
+
+
 def _find_block(blocks: list[dict[str, Any]], cfo_name: str) -> dict[str, Any] | None:
     target = _normalize_key(cfo_name)
     for block in blocks:
@@ -937,6 +1206,12 @@ def _single_value_or_blank(values: list[str]) -> str:
     if len(values) == 1:
         return values[0]
     return ""
+
+
+def _project_value_or_blank(values: list[str]) -> str:
+    if not values:
+        return ""
+    return values[0]
 
 
 def _set_row_grouping(
@@ -1121,6 +1396,37 @@ def _set_cell_value(sheet: Worksheet, coordinate: str, value: Any) -> None:
     if isinstance(sheet[coordinate], MergedCell):
         return
     sheet[coordinate] = value
+
+
+def _estimate_wrapped_lines(value: Any, column_width: float | None) -> int:
+    if value in (None, ""):
+        return 1
+
+    text = str(value)
+    width = max(int((column_width or 10) * 1.1), 1)
+    line_count = 0
+    for raw_line in text.splitlines() or [""]:
+        line = raw_line or " "
+        line_count += max((len(line) + width - 1) // width, 1)
+    return max(line_count, 1)
+
+
+def _format_cfo_row(sheet: Worksheet, row_idx: int, min_height: float | None) -> None:
+    max_lines = 1
+    for column in ("A", "B", "C"):
+        cell = sheet[f"{column}{row_idx}"]
+        alignment = copy(cell.alignment)
+        alignment.vertical = "center"
+        alignment.wrap_text = True
+        cell.alignment = alignment
+
+        column_letter = column
+        width = sheet.column_dimensions[column_letter].width
+        if column in {"A", "C"}:
+            max_lines = max(max_lines, _estimate_wrapped_lines(cell.value, width))
+
+    base_height = float(min_height) if min_height else 15.0
+    sheet.row_dimensions[row_idx].height = max(base_height, 15.0 * max_lines)
 
 
 def _require_str(payload: dict[str, Any], key: str, page_name: str) -> str:
