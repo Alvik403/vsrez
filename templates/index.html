@@ -129,6 +129,9 @@
 
                 <div class="btn-row">
                     <button id="submitBtn" class="btn primary" type="submit">Собрать итоговый Excel</button>
+                    {% if has_local_test_files %}
+                    <button id="testBtn" class="btn" type="button">Тест</button>
+                    {% endif %}
                 </div>
             </form>
 
@@ -139,6 +142,7 @@
     <script>
         const form = document.getElementById("consolidationForm");
         const submitBtn = document.getElementById("submitBtn");
+        const testBtn = document.getElementById("testBtn");
         const statusBox = document.getElementById("statusBox");
 
         function showStatus(message, isError) {
@@ -149,9 +153,31 @@
             statusBox.style.color = isError ? "#9f1239" : "#355375";
         }
 
+        async function downloadResponse(response) {
+            const blob = await response.blob();
+            const disposition = response.headers.get("content-disposition") || "";
+            const match = disposition.match(/filename="?([^"]+)"?/i);
+            const filename = match ? match[1] : "result.xlsx";
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement("a");
+            anchor.href = url;
+            anchor.download = filename;
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            URL.revokeObjectURL(url);
+        }
+
+        function setButtonsDisabled(disabled) {
+            submitBtn.disabled = disabled;
+            if (testBtn) {
+                testBtn.disabled = disabled;
+            }
+        }
+
         form.addEventListener("submit", async function (event) {
             event.preventDefault();
-            submitBtn.disabled = true;
+            setButtonsDisabled(true);
             showStatus("Обрабатываю Excel-файлы...", false);
 
             try {
@@ -166,26 +192,40 @@
                     throw new Error(payload.detail || "Не удалось собрать итоговый Excel.");
                 }
 
-                const blob = await response.blob();
-                const disposition = response.headers.get("content-disposition") || "";
-                const match = disposition.match(/filename="?([^"]+)"?/i);
-                const filename = match ? match[1] : "result.xlsx";
-                const url = URL.createObjectURL(blob);
-                const anchor = document.createElement("a");
-                anchor.href = url;
-                anchor.download = filename;
-                document.body.appendChild(anchor);
-                anchor.click();
-                anchor.remove();
-                URL.revokeObjectURL(url);
+                await downloadResponse(response);
                 form.reset();
                 showStatus("Готово. Итоговый Excel скачан.", false);
             } catch (error) {
                 showStatus(error.message || "Ошибка обработки.", true);
             } finally {
-                submitBtn.disabled = false;
+                setButtonsDisabled(false);
             }
         });
+
+        if (testBtn) {
+            testBtn.addEventListener("click", async function () {
+                setButtonsDisabled(true);
+                showStatus("Собираю тестовый Excel по встроенным файлам...", false);
+
+                try {
+                    const response = await fetch("/api/consolidate/test", {
+                        method: "POST"
+                    });
+
+                    if (!response.ok) {
+                        const payload = await response.json().catch(() => ({}));
+                        throw new Error(payload.detail || "Не удалось собрать тестовый Excel.");
+                    }
+
+                    await downloadResponse(response);
+                    showStatus("Готово. Тестовый Excel скачан.", false);
+                } catch (error) {
+                    showStatus(error.message || "Ошибка обработки.", true);
+                } finally {
+                    setButtonsDisabled(false);
+                }
+            });
+        }
     </script>
 </body>
 </html>

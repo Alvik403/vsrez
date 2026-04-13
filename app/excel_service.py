@@ -4,6 +4,8 @@ from copy import copy
 from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
+from collections import Counter
+import re
 from typing import Any
 
 from openpyxl import load_workbook
@@ -140,6 +142,7 @@ def _apply_reserves_page(
     target_sheet = template_book[template_sheet_name]
     layout = _parse_existing_layout(target_sheet, data_start_row)
     _merge_source_records(layout, source_records, page)
+    new_cfo_names = {str(block["name"]) for block in layout["blocks"] if block.get("is_new")}
     detail_rows = _rewrite_reserve_sheet(target_sheet, layout, page, data_start_row)
     _rewrite_helper_sheet(
         template_book=template_book,
@@ -160,6 +163,7 @@ def _apply_reserves_page(
         template_values_book=template_values_book,
         page=page,
         source_records=source_records,
+        new_cfo_names=new_cfo_names,
     )
 
     return {
@@ -286,6 +290,7 @@ def _parse_existing_layout(sheet: Worksheet, start_row: int) -> dict[str, Any]:
                 "date": _extract_year(sheet[f"I{row_idx}"].value),
                 "work_value": sheet[f"E{row_idx}"].value,
                 "is_new": False,
+                "template": _snapshot_row(sheet, row_idx),
             }
             current_level["details"].append(record)
             current_block["templates"].setdefault("detail", _snapshot_row(sheet, row_idx))
@@ -331,7 +336,7 @@ def _merge_source_records(layout: dict[str, Any], source_records: list[dict[str,
             level = {
                 "name": record["level"],
                 "details": [],
-                "template_total": copy(block["templates"]["level_total"]),
+                "template_total": _clone_template(block["templates"]["level_total"]),
             }
             block["levels"].append(level)
 
@@ -354,7 +359,13 @@ def _rewrite_reserve_sheet(
     for block in layout["blocks"]:
         fill_color = block.get("fill_color") if block.get("is_new") else None
 
-        _apply_row_template(sheet, row_idx, block["templates"]["cfo_total"], fill_color)
+        _apply_row_template(
+            sheet,
+            row_idx,
+            block["templates"]["cfo_total"],
+            fill_color,
+            fill_columns=set(range(2, 11)) if fill_color else None,
+        )
         cfo_total_row = row_idx
         sheet[f"B{row_idx}"] = block["name"]
         _clear_cells(sheet, row_idx, ["C", "D", "E", "G", "H", "I", "J"])
@@ -362,7 +373,14 @@ def _rewrite_reserve_sheet(
 
         level_total_rows: list[int] = []
         for level_index, level in enumerate(block["levels"]):
-            _apply_row_template(sheet, row_idx, level["template_total"], fill_color)
+            _apply_row_template(
+                sheet,
+                row_idx,
+                level["template_total"],
+                fill_color,
+                fill_columns={2, 3} if fill_color else None,
+                clear_fill_columns=set(range(4, 11)) if fill_color else None,
+            )
             level_total_row = row_idx
             level_total_rows.append(level_total_row)
             sheet[f"B{row_idx}"] = block["name"]
@@ -375,7 +393,17 @@ def _rewrite_reserve_sheet(
             for detail_index, detail in enumerate(level["details"]):
                 is_last_detail_in_block = is_last_level and detail_index == len(level["details"]) - 1
                 template_key = "detail_end" if is_last_detail_in_block else "detail"
-                _apply_row_template(sheet, row_idx, block["templates"][template_key], fill_color)
+                style_template = block["templates"][template_key]
+                row_dimension_template = detail.get("template") or style_template
+                _apply_row_template(
+                    sheet,
+                    row_idx,
+                    style_template,
+                    fill_color,
+                    row_dimension_template=row_dimension_template,
+                    fill_columns={2, 3} if fill_color else None,
+                    clear_fill_columns=set(range(4, 11)) if fill_color else None,
+                )
                 _write_detail_row(sheet, row_idx, detail, block["name"], level["name"])
                 detail_rows.append(row_idx)
                 level_detail_rows.append(row_idx)
@@ -406,11 +434,13 @@ def _rewrite_helper_sheet(
 ) -> None:
     helper_sheet = template_book[helper_sheet_name]
     helper_template = _snapshot_row(helper_sheet, helper_start_row)
+    helper_templates = _parse_existing_helper_templates(helper_sheet, helper_start_row, target_sheet_name)
     max_existing = helper_sheet.max_row
 
     for index, source_row in enumerate(detail_rows):
         row_idx = helper_start_row + index
-        _apply_row_template(helper_sheet, row_idx, helper_template, None)
+        row_template = helper_templates.get(source_row, helper_template)
+        _apply_row_template(helper_sheet, row_idx, row_template, None)
         helper_sheet[f"B{row_idx}"] = f"='{target_sheet_name}'!D{source_row}"
         helper_sheet[f"C{row_idx}"] = f"='{target_sheet_name}'!E{source_row}"
         helper_sheet[f"D{row_idx}"] = f"='{target_sheet_name}'!F{source_row}"
@@ -465,6 +495,9 @@ def _rewrite_breakdown_sheet(
         start_row=start_row,
         total_label=str(page.get("breakdown_total_label", "Общий итог")),
     )
+    type_grouping_template = _first_existing_group_template(grouped, "template") or type_template
+    comment_grouping_template = _first_existing_nested_template(grouped, "comments") or comment_template
+    reason_grouping_template = _first_existing_nested_template(grouped, "comments", "reasons") or reason_template
     _merge_breakdown_source_records(
         grouped=grouped,
         source_records=source_records,
@@ -477,24 +510,22 @@ def _rewrite_breakdown_sheet(
     row_idx = start_row
     max_existing = sheet.max_row
     for type_entry in grouped:
-        _apply_row_template(sheet, row_idx, type_entry.get("template", type_template), None)
+        row_template = type_entry.get("template", type_template)
+        grouping_template = row_template if type_entry.get("is_existing") else type_grouping_template
+        _apply_row_template(sheet, row_idx, row_template, None)
         _set_cell_value(sheet, f"A{row_idx}", type_entry.get("output_a", type_entry["name"]))
         type_row_idx = row_idx
         type_comment_rows: list[int] = []
         _set_cell_value(sheet, f"B{row_idx}", None)
         _set_cell_value(sheet, f"C{row_idx}", type_entry.get("output_c"))
         _set_cell_value(sheet, f"D{row_idx}", type_entry.get("output_d"))
-        _set_row_grouping(
-            sheet,
-            row_idx,
-            outline_level=0,
-            hidden=False,
-            collapsed=bool(type_entry["comments"]),
-        )
+        _apply_template_grouping(sheet, row_idx, grouping_template)
         row_idx += 1
 
         for comment_entry in type_entry["comments"]:
-            _apply_row_template(sheet, row_idx, comment_entry.get("template", comment_template), None)
+            row_template = comment_entry.get("template", comment_template)
+            grouping_template = row_template if comment_entry.get("is_existing") else comment_grouping_template
+            _apply_row_template(sheet, row_idx, row_template, None)
             _set_cell_value(sheet, f"A{row_idx}", comment_entry.get("output_a", comment_entry["name"]))
             comment_row_idx = row_idx
             comment_reason_rows: list[int] = []
@@ -502,17 +533,13 @@ def _rewrite_breakdown_sheet(
             _set_cell_value(sheet, f"B{row_idx}", None)
             _set_cell_value(sheet, f"C{row_idx}", comment_entry.get("output_c"))
             _set_cell_value(sheet, f"D{row_idx}", comment_entry.get("output_d"))
-            _set_row_grouping(
-                sheet,
-                row_idx,
-                outline_level=1,
-                hidden=True,
-                collapsed=bool(comment_entry["reasons"]),
-            )
+            _apply_template_grouping(sheet, row_idx, grouping_template)
             row_idx += 1
 
             for reason_entry in comment_entry["reasons"]:
-                _apply_row_template(sheet, row_idx, reason_entry.get("template", reason_template), None)
+                row_template = reason_entry.get("template", reason_template)
+                grouping_template = row_template if reason_entry.get("is_existing") else reason_grouping_template
+                _apply_row_template(sheet, row_idx, row_template, None)
                 _set_cell_value(sheet, f"A{row_idx}", reason_entry.get("output_a", reason_entry["name"]))
                 if reason_entry.get("is_existing"):
                     _set_cell_value(sheet, f"B{row_idx}", reason_entry.get("output_b"))
@@ -523,13 +550,7 @@ def _rewrite_breakdown_sheet(
                     _set_cell_value(sheet, f"C{row_idx}", _single_value_or_blank(reason_entry["projects"]))
                     _set_cell_value(sheet, f"D{row_idx}", _single_value_or_blank(reason_entry["cfos"]))
                 comment_reason_rows.append(row_idx)
-                _set_row_grouping(
-                    sheet,
-                    row_idx,
-                    outline_level=2,
-                    hidden=True,
-                    collapsed=False,
-                )
+                _apply_template_grouping(sheet, row_idx, grouping_template)
                 row_idx += 1
 
             _set_cell_value(
@@ -550,13 +571,7 @@ def _rewrite_breakdown_sheet(
     _set_cell_value(sheet, f"B{row_idx}", _build_addition_formula_for_column(type_rows, "B"))
     _set_cell_value(sheet, f"C{row_idx}", None)
     _set_cell_value(sheet, f"D{row_idx}", None)
-    _set_row_grouping(
-        sheet,
-        row_idx,
-        outline_level=0,
-        hidden=False,
-        collapsed=False,
-    )
+    _apply_template_grouping(sheet, row_idx, total_template)
     row_idx += 1
 
     for clear_row in range(row_idx, max_existing + 1):
@@ -577,6 +592,7 @@ def _rewrite_cfo_sheet(
     template_values_book: Workbook,
     page: dict[str, Any],
     source_records: list[dict[str, Any]],
+    new_cfo_names: set[str] | None = None,
 ) -> int:
     sheet_name = str(page.get("cfo_sheet", "Справка по ЦФО"))
     if sheet_name not in template_book.sheetnames:
@@ -597,6 +613,9 @@ def _rewrite_cfo_sheet(
         start_row=start_row,
         total_label=str(page.get("cfo_total_label", "Общий итог")),
     )
+    cfo_grouping_template = _most_common_group_template(grouped, cfo_template)
+    comment_grouping_template = _most_common_nested_template(grouped, "comments", comment_template)
+    reason_grouping_template = _most_common_nested_template(grouped, "comments", reason_template, "reasons")
     _merge_cfo_source_records(
         grouped=grouped,
         source_records=source_records,
@@ -608,19 +627,32 @@ def _rewrite_cfo_sheet(
     row_idx = start_row
     max_existing = sheet.max_row
     for cfo_entry in grouped:
-        _apply_row_template(sheet, row_idx, cfo_template, None)
+        row_template = cfo_grouping_template
+        grouping_template = cfo_grouping_template
+        _apply_row_template(
+            sheet,
+            row_idx,
+            row_template,
+            None,
+        )
         _set_cell_value(sheet, f"A{row_idx}", cfo_entry.get("output_a", f"Вскрытие {cfo_entry['name']}"))
         cfo_row_idx = row_idx
         cfo_comment_rows: list[int] = []
         _set_cell_value(sheet, f"B{row_idx}", None)
         _set_cell_value(sheet, f"C{row_idx}", cfo_entry.get("output_c"))
         _clear_cells(sheet, row_idx, ["D"])
-        _set_row_grouping(sheet, row_idx, outline_level=0, hidden=False, collapsed=bool(cfo_entry["comments"]))
-        _format_cfo_row(sheet, row_idx, min_height=cfo_template.get("height"))
+        _apply_template_grouping(sheet, row_idx, grouping_template)
         row_idx += 1
 
         for comment_entry in cfo_entry["comments"]:
-            _apply_row_template(sheet, row_idx, comment_template, None)
+            row_template = comment_grouping_template
+            grouping_template = comment_grouping_template
+            _apply_row_template(
+                sheet,
+                row_idx,
+                row_template,
+                None,
+            )
             _set_cell_value(sheet, f"A{row_idx}", comment_entry.get("output_a", comment_entry["name"]))
             comment_row_idx = row_idx
             comment_reason_rows: list[int] = []
@@ -628,12 +660,18 @@ def _rewrite_cfo_sheet(
             _set_cell_value(sheet, f"B{row_idx}", None)
             _set_cell_value(sheet, f"C{row_idx}", comment_entry.get("output_c"))
             _clear_cells(sheet, row_idx, ["D"])
-            _set_row_grouping(sheet, row_idx, outline_level=1, hidden=True, collapsed=bool(comment_entry["reasons"]))
-            _format_cfo_row(sheet, row_idx, min_height=comment_template.get("height"))
+            _apply_template_grouping(sheet, row_idx, grouping_template)
             row_idx += 1
 
             for reason_entry in comment_entry["reasons"]:
-                _apply_row_template(sheet, row_idx, reason_template, None)
+                row_template = reason_grouping_template
+                grouping_template = reason_grouping_template
+                _apply_row_template(
+                    sheet,
+                    row_idx,
+                    row_template,
+                    None,
+                )
                 _set_cell_value(sheet, f"A{row_idx}", reason_entry.get("output_a", reason_entry["name"]))
                 if reason_entry.get("is_existing"):
                     _set_cell_value(sheet, f"B{row_idx}", reason_entry.get("output_b"))
@@ -647,8 +685,7 @@ def _rewrite_cfo_sheet(
                     _set_cell_value(sheet, f"C{row_idx}", _project_value_or_blank(reason_entry["projects"]))
                 _clear_cells(sheet, row_idx, ["D"])
                 comment_reason_rows.append(row_idx)
-                _set_row_grouping(sheet, row_idx, outline_level=2, hidden=True, collapsed=False)
-                _format_cfo_row(sheet, row_idx, min_height=reason_template.get("height"))
+                _apply_template_grouping(sheet, row_idx, grouping_template)
                 row_idx += 1
 
             _set_cell_value(sheet, f"B{comment_row_idx}", _build_sum_formula_for_column(comment_reason_rows, "B"))
@@ -661,8 +698,7 @@ def _rewrite_cfo_sheet(
     _set_cell_value(sheet, f"B{row_idx}", _build_addition_formula_for_column(cfo_rows, "B"))
     _set_cell_value(sheet, f"C{row_idx}", None)
     _clear_cells(sheet, row_idx, ["D"])
-    _set_row_grouping(sheet, row_idx, outline_level=0, hidden=False, collapsed=False)
-    _format_cfo_row(sheet, row_idx, min_height=total_template.get("height"))
+    _apply_template_grouping(sheet, row_idx, total_template)
     row_idx += 1
 
     for clear_row in range(row_idx, max_existing + 1):
@@ -1030,8 +1066,12 @@ def _snapshot_row(sheet: Worksheet, row_idx: int) -> dict[str, Any]:
     for merged_range in sheet.merged_cells.ranges:
         if merged_range.min_row == row_idx and merged_range.max_row == row_idx:
             merges.append((merged_range.min_col, merged_range.max_col))
+    row_dimension = sheet.row_dimensions[row_idx]
     return {
-        "height": sheet.row_dimensions[row_idx].height,
+        "height": row_dimension.height,
+        "outline_level": int(row_dimension.outlineLevel or 0),
+        "hidden": bool(row_dimension.hidden),
+        "collapsed": bool(row_dimension.collapsed),
         "styles": styles,
         "merges": merges,
     }
@@ -1042,11 +1082,18 @@ def _apply_row_template(
     row_idx: int,
     template: dict[str, Any],
     fill_color: str | None,
+    fill_columns: set[int] | None = None,
+    clear_fill_columns: set[int] | None = None,
+    row_dimension_template: dict[str, Any] | None = None,
 ) -> None:
     _reset_row_merges(sheet, row_idx)
 
-    if template.get("height") is not None:
-        sheet.row_dimensions[row_idx].height = template["height"]
+    dimension_template = row_dimension_template or template
+    row_dimension = sheet.row_dimensions[row_idx]
+    row_dimension.height = dimension_template.get("height")
+    row_dimension.outlineLevel = int(dimension_template.get("outline_level", 0) or 0)
+    row_dimension.hidden = bool(dimension_template.get("hidden", False))
+    row_dimension.collapsed = bool(dimension_template.get("collapsed", False))
 
     for col_idx, style in template["styles"].items():
         cell = sheet.cell(row=row_idx, column=col_idx)
@@ -1054,7 +1101,10 @@ def _apply_row_template(
             continue
         cell._style = copy(style)
 
-        if fill_color and 2 <= col_idx <= 10 and cell.fill.fill_type == "solid":
+        if clear_fill_columns and col_idx in clear_fill_columns:
+            cell.fill = PatternFill(fill_type=None)
+
+        if fill_color and fill_columns and col_idx in fill_columns:
             cell.fill = PatternFill(fill_type="solid", start_color=fill_color, end_color=fill_color)
 
     for min_col, max_col in template.get("merges", []):
@@ -1091,6 +1141,9 @@ def _clone_templates(templates: dict[str, Any]) -> dict[str, Any]:
     return {
         key: {
             "height": value["height"],
+            "outline_level": value.get("outline_level", 0),
+            "hidden": value.get("hidden", False),
+            "collapsed": value.get("collapsed", False),
             "styles": {c: copy(s) for c, s in value["styles"].items()},
             "merges": list(value.get("merges", [])),
         }
@@ -1101,6 +1154,9 @@ def _clone_templates(templates: dict[str, Any]) -> dict[str, Any]:
 def _clone_template(template: dict[str, Any]) -> dict[str, Any]:
     return {
         "height": template["height"],
+        "outline_level": template.get("outline_level", 0),
+        "hidden": template.get("hidden", False),
+        "collapsed": template.get("collapsed", False),
         "styles": {c: copy(s) for c, s in template["styles"].items()},
         "merges": list(template.get("merges", [])),
     }
@@ -1109,6 +1165,9 @@ def _clone_template(template: dict[str, Any]) -> dict[str, Any]:
 def _limit_template_columns(template: dict[str, Any], max_col: int) -> dict[str, Any]:
     return {
         "height": template["height"],
+        "outline_level": template.get("outline_level", 0),
+        "hidden": template.get("hidden", False),
+        "collapsed": template.get("collapsed", False),
         "styles": {col: copy(style) for col, style in template["styles"].items() if col <= max_col},
         "merges": [
             (min_col, max_merge_col)
@@ -1225,6 +1284,134 @@ def _set_row_grouping(
     row_dimension.outlineLevel = outline_level
     row_dimension.hidden = hidden
     row_dimension.collapsed = collapsed
+
+
+def _apply_template_grouping(sheet: Worksheet, row_idx: int, template: dict[str, Any]) -> None:
+    _set_row_grouping(
+        sheet,
+        row_idx,
+        outline_level=int(template.get("outline_level", 0) or 0),
+        hidden=bool(template.get("hidden", False)),
+        collapsed=bool(template.get("collapsed", False)),
+    )
+
+
+def _first_existing_group_template(grouped: list[dict[str, Any]], key: str) -> dict[str, Any] | None:
+    for entry in grouped:
+        if entry.get("is_existing"):
+            template = entry.get(key)
+            if isinstance(template, dict):
+                return template
+    return None
+
+
+def _first_existing_nested_template(
+    grouped: list[dict[str, Any]],
+    first_key: str,
+    second_key: str | None = None,
+) -> dict[str, Any] | None:
+    for entry in grouped:
+        for nested in entry.get(first_key, []):
+            if second_key is None:
+                if nested.get("is_existing"):
+                    template = nested.get("template")
+                    if isinstance(template, dict):
+                        return template
+                continue
+            for inner in nested.get(second_key, []):
+                if inner.get("is_existing"):
+                    template = inner.get("template")
+                    if isinstance(template, dict):
+                        return template
+    return None
+
+
+def _template_signature(template: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        template.get("height"),
+        template.get("outline_level", 0),
+        template.get("hidden", False),
+        template.get("collapsed", False),
+        tuple(
+            (col, getattr(style, "fillId", None), getattr(style, "borderId", None), getattr(style, "fontId", None))
+            for col, style in sorted(template.get("styles", {}).items())
+        ),
+        tuple(template.get("merges", [])),
+    )
+
+
+def _most_common_group_template(grouped: list[dict[str, Any]], fallback: dict[str, Any]) -> dict[str, Any]:
+    templates = [
+        entry.get("template")
+        for entry in grouped
+        if entry.get("is_existing") and isinstance(entry.get("template"), dict)
+    ]
+    return _pick_most_common_template(templates, fallback)
+
+
+def _most_common_nested_template(
+    grouped: list[dict[str, Any]],
+    first_key: str,
+    fallback: dict[str, Any],
+    second_key: str | None = None,
+) -> dict[str, Any]:
+    templates: list[dict[str, Any]] = []
+    for entry in grouped:
+        for nested in entry.get(first_key, []):
+            if second_key is None:
+                template = nested.get("template")
+                if nested.get("is_existing") and isinstance(template, dict):
+                    templates.append(template)
+                continue
+            for inner in nested.get(second_key, []):
+                template = inner.get("template")
+                if inner.get("is_existing") and isinstance(template, dict):
+                    templates.append(template)
+    return _pick_most_common_template(templates, fallback)
+
+
+def _pick_most_common_template(templates: list[dict[str, Any]], fallback: dict[str, Any]) -> dict[str, Any]:
+    if not templates:
+        return fallback
+
+    counts = Counter(_template_signature(template) for template in templates)
+    most_common_signature, _ = counts.most_common(1)[0]
+    for template in templates:
+        if _template_signature(template) == most_common_signature:
+            return template
+    return fallback
+
+
+def _parse_existing_helper_templates(
+    helper_sheet: Worksheet,
+    helper_start_row: int,
+    target_sheet_name: str,
+) -> dict[int, dict[str, Any]]:
+    templates: dict[int, dict[str, Any]] = {}
+    for row_idx in range(helper_start_row, helper_sheet.max_row + 1):
+        source_row = _extract_formula_row_reference(helper_sheet[f"B{row_idx}"].value, target_sheet_name)
+        if source_row is None:
+            continue
+        templates[source_row] = _snapshot_row(helper_sheet, row_idx)
+    return templates
+
+
+def _extract_formula_row_reference(value: Any, target_sheet_name: str) -> int | None:
+    if not _is_formula(value):
+        return None
+
+    expression = str(value)[1:]
+    if "!" not in expression:
+        return None
+
+    sheet_ref, cell_ref = expression.split("!", 1)
+    if _normalize_key(sheet_ref.strip("'")) != _normalize_key(target_sheet_name):
+        return None
+
+    match = re.search(r"[A-Z]+(\d+)$", cell_ref)
+    if not match:
+        return None
+    return int(match.group(1))
 
 
 def _extract_year(value: Any) -> Any:
