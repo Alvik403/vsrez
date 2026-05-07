@@ -109,7 +109,7 @@
     <div class="wrap">
         <section class="box">
             <h1>Консолидация Excel-файлов</h1>
-            <p class="lead">Загрузите исходные файлы и, при необходимости, свой шаблон или JSON-конфиг.</p>
+            <p class="lead">Загрузите исходные файлы и при необходимости свой шаблон. Конфигурация берётся из <code>config/app_config.json</code> на сервере.</p>
 
             <form id="consolidationForm" autocomplete="off">
                 <div class="field">
@@ -120,11 +120,6 @@
                 <div class="field">
                     <label for="sourceFiles">Исходные файлы (.xlsx / .xlsm)</label>
                     <input id="sourceFiles" name="source_files" type="file" accept=".xlsx,.xlsm" multiple required>
-                </div>
-
-                <div class="field">
-                    <label for="configFile">JSON-конфиг (необязательно)</label>
-                    <input id="configFile" name="config_file" type="file" accept=".json">
                 </div>
 
                 <div class="btn-row">

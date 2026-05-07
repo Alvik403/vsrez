@@ -8,7 +8,7 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
-from app.config import DEFAULT_CONFIG_PATH, ROOT_DIR, load_app_config
+from app.config import ROOT_DIR, load_app_config
 from app.excel_service import ConfigError, consolidate_workbooks
 
 
@@ -32,7 +32,6 @@ async def index(request: Request) -> HTMLResponse:
         request=request,
         name="index.html",
         context={
-            "default_config_path": str(DEFAULT_CONFIG_PATH).replace("\\", "/"),
             "has_local_test_files": TEST_TEMPLATE_PATH.exists() and TEST_SOURCE_PATH.exists(),
         },
     )
@@ -51,11 +50,9 @@ async def get_default_config() -> JSONResponse:
 async def consolidate(
     template_file: UploadFile | None = File(default=None),
     source_files: list[UploadFile] = File(...),
-    config_file: UploadFile | None = File(default=None),
 ) -> StreamingResponse:
     try:
-        config_payload = await config_file.read() if config_file is not None else None
-        config = load_app_config(config_payload or None)
+        config = load_app_config()
         template_name = template_file.filename if template_file is not None else None
         _validate_upload_names(template_name=template_name, source_files=source_files)
         template_bytes = await template_file.read() if template_file is not None else None
@@ -76,8 +73,6 @@ async def consolidate(
     finally:
         if template_file is not None:
             await template_file.close()
-        if config_file is not None:
-            await config_file.close()
         for upload in source_files:
             await upload.close()
 

@@ -79,9 +79,10 @@
 
 Принимает multipart-форму:
 
-- `template_file` - необязательный шаблон `xlsx/xlsm`
-- `source_files` - один или несколько исходных файлов
-- `config_file` - необязательный JSON-конфиг
+- `template_file` — необязательный шаблон `xlsx/xlsm` (если не указан, используется `default_template_path` из `config/app_config.json`)
+- `source_files` — один или несколько исходных файлов
+
+Используется конфиг только с сервера: `config/app_config.json`.
 
 Возвращает готовый Excel-файл для скачивания.
 

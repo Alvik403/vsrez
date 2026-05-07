@@ -5,11 +5,13 @@ from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
 from collections import Counter
+import logging
 import re
 from typing import Any
 
 from openpyxl import load_workbook
 from openpyxl.cell.cell import MergedCell
+from openpyxl.formula.translate import Translator
 from openpyxl.styles import Alignment, PatternFill
 from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.workbook import Workbook
@@ -21,6 +23,8 @@ from app.config import ROOT_DIR
 class ConfigError(ValueError):
     pass
 
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_NEW_BLOCK_COLORS = ["E2F0D9", "DDEBF7", "FCE4D6", "FFF2CC", "E4DFEC"]
 
@@ -143,7 +147,38 @@ def _apply_reserves_page(
     layout = _parse_existing_layout(target_sheet, data_start_row)
     _merge_source_records(layout, source_records, page)
     new_cfo_names = {str(block["name"]) for block in layout["blocks"] if block.get("is_new")}
-    detail_rows = _rewrite_reserve_sheet(target_sheet, layout, page, data_start_row)
+
+    gap_cfg = page.get("preserve_reserve_sector_gap")
+    gap_templates: list[dict[str, Any]] | None = None
+    if isinstance(gap_cfg, dict) and gap_cfg.get("enabled"):
+        gap_templates = _extract_reserve_sector_gap_templates(target_sheet, gap_cfg)
+
+    detail_rows = _rewrite_reserve_sheet(
+        target_sheet,
+        layout,
+        page,
+        data_start_row,
+        gap_band_templates=gap_templates,
+    )
+
+    from app.reserve_header_sync import (
+        apply_reserve_sheet_header_sync,
+        find_template_reserve_plan_rows,
+        update_reserve_summaries_multi_block,
+    )
+
+    sync_cfg = page.get("reserve_header_sync")
+    if not isinstance(sync_cfg, dict):
+        sync_cfg = {"enabled": False}
+    apply_reserve_sheet_header_sync(
+        target_sheet,
+        source_books,
+        source_sheet_name,
+        preset=source_preset,
+        sync_cfg=sync_cfg,
+        source_records=source_records,
+    )
+
     _rewrite_helper_sheet(
         template_book=template_book,
         helper_sheet_name=helper_sheet_name,
@@ -151,7 +186,11 @@ def _apply_reserves_page(
         helper_start_row=helper_start_row,
         detail_rows=detail_rows,
     )
-    _update_sheet_summary(target_sheet, detail_rows)
+    plan_anchor_rows = find_template_reserve_plan_rows(target_sheet)
+    if len(plan_anchor_rows) >= 2:
+        update_reserve_summaries_multi_block(target_sheet, detail_rows)
+    else:
+        _update_sheet_summary(target_sheet, detail_rows)
     breakdown_rows = _rewrite_breakdown_sheet(
         template_book=template_book,
         template_values_book=template_values_book,
@@ -343,20 +382,80 @@ def _merge_source_records(layout: dict[str, Any], source_records: list[dict[str,
         level["details"].append(record)
 
 
+def _extract_reserve_sector_gap_templates(sheet: Worksheet, gap_cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    start_row: int | None = None
+    seen_first_project_header = False
+
+    for row_idx in range(1, sheet.max_row + 1):
+        if _normalize_key(sheet.cell(row=row_idx, column=2).value) != _normalize_key("Наименование проекта"):
+            continue
+        if not seen_first_project_header:
+            seen_first_project_header = True
+            continue
+        start_row = row_idx
+        break
+
+    if start_row is None:
+        start_row = int(gap_cfg.get("source_row_first", 33))
+        end_row = int(gap_cfg.get("source_row_last", 37))
+        return [_snapshot_row(sheet, row, include_values=True) for row in range(start_row, end_row + 1)]
+
+    end_row = int(gap_cfg.get("source_row_last", start_row))
+    for row_idx in range(start_row + 1, sheet.max_row + 1):
+        if (
+            _normalize_key(sheet.cell(row=row_idx, column=2).value) == _normalize_key("ЦФО")
+            and _normalize_key(sheet.cell(row=row_idx, column=4).value) == _normalize_key("Уровень резерва")
+        ):
+            end_row = row_idx - 1
+            break
+        if row_idx > start_row + 1 and _classify_sheet_row(sheet, row_idx) == "cfo_total":
+            end_row = row_idx - 1
+            break
+
+    return [_snapshot_row(sheet, row, include_values=True) for row in range(start_row, end_row + 1)]
+
+
 def _rewrite_reserve_sheet(
     sheet: Worksheet,
     layout: dict[str, Any],
     page: dict[str, Any],
     start_row: int,
+    *,
+    gap_band_templates: list[dict[str, Any]] | None = None,
 ) -> list[int]:
     detail_rows: list[int] = []
     row_idx = start_row
     first_project = _pick_first_project(layout["blocks"])
+    gap_inserted = False
+    gap_cfg = page.get("preserve_reserve_sector_gap")
+    project_gap_blank_rows = int(gap_cfg.get("project_gap_blank_rows", 3)) if isinstance(gap_cfg, dict) else 3
 
     if first_project:
         sheet["B4"] = first_project
 
-    for block in layout["blocks"]:
+    blocks = layout["blocks"]
+    for block_index, block in enumerate(blocks):
+        inject_gap = False
+        if gap_band_templates and not gap_inserted and block_index >= 2:
+            nk = _normalize_key(block["name"])
+            if (
+                nk
+                == _normalize_key(blocks[block_index - 2]["name"])
+                and nk != _normalize_key(blocks[block_index - 1]["name"])
+            ):
+                inject_gap = True
+        if inject_gap:
+            blank_template = layout["blank_template"]
+            for _ in range(max(project_gap_blank_rows, 0)):
+                _apply_row_template(sheet, row_idx, blank_template, None)
+                _clear_cells(sheet, row_idx, [get_column_letter(col) for col in range(1, 11)])
+                row_idx += 1
+            for snap in gap_band_templates:
+                _apply_row_template(sheet, row_idx, snap, None)
+                _apply_row_values(sheet, row_idx, snap)
+                row_idx += 1
+            gap_inserted = True
+
         fill_color = block.get("fill_color") if block.get("is_new") else None
 
         _apply_row_template(
@@ -1057,17 +1156,21 @@ def _build_addition_formula_for_column(rows: list[int], column: str) -> str:
     return "=" + "+".join(f"{column}{row}" for row in rows)
 
 
-def _snapshot_row(sheet: Worksheet, row_idx: int) -> dict[str, Any]:
+def _snapshot_row(sheet: Worksheet, row_idx: int, *, include_values: bool = False) -> dict[str, Any]:
     styles: dict[int, Any] = {}
+    values: dict[int, Any] = {}
     for col_idx in range(1, sheet.max_column + 1):
         cell = sheet.cell(row=row_idx, column=col_idx)
         styles[col_idx] = copy(cell._style)
+        if include_values:
+            values[col_idx] = cell.value
     merges: list[tuple[int, int]] = []
     for merged_range in sheet.merged_cells.ranges:
         if merged_range.min_row == row_idx and merged_range.max_row == row_idx:
             merges.append((merged_range.min_col, merged_range.max_col))
     row_dimension = sheet.row_dimensions[row_idx]
-    return {
+    snapshot = {
+        "source_row": row_idx,
         "height": row_dimension.height,
         "outline_level": int(row_dimension.outlineLevel or 0),
         "hidden": bool(row_dimension.hidden),
@@ -1075,6 +1178,9 @@ def _snapshot_row(sheet: Worksheet, row_idx: int) -> dict[str, Any]:
         "styles": styles,
         "merges": merges,
     }
+    if include_values:
+        snapshot["values"] = values
+    return snapshot
 
 
 def _apply_row_template(
@@ -1116,23 +1222,57 @@ def _apply_row_template(
         )
 
 
+def _apply_row_values(sheet: Worksheet, row_idx: int, template: dict[str, Any]) -> None:
+    for col_idx, value in template.get("values", {}).items():
+        coordinate = f"{get_column_letter(col_idx)}{row_idx}"
+        if _is_formula(value):
+            source_row = template.get("source_row")
+            if isinstance(source_row, int) and source_row != row_idx:
+                origin = f"{get_column_letter(col_idx)}{source_row}"
+                try:
+                    value = Translator(value, origin=origin).translate_formula(coordinate)
+                except Exception:
+                    logger.debug("Не удалось сдвинуть формулу %s из %s в %s.", value, origin, coordinate)
+        _set_cell_value(sheet, coordinate, value)
+
+
 def _clear_cells(sheet: Worksheet, row_idx: int, columns: list[str]) -> None:
     for column in columns:
         _set_cell_value(sheet, f"{column}{row_idx}", None)
 
 
+def _is_reserve_sheet_level_cell(value: Any) -> bool:
+    """Уровень резерва на листе: РП / РГП / ЗГД / ГД (не число-бюджет в блоке верхней сводки)."""
+    lv = _clean_text(value)
+    if not lv:
+        return False
+    return _normalize_key(lv) in ("рп", "ргп", "згд", "гд")
+
+
 def _classify_sheet_row(sheet: Worksheet, row_idx: int) -> str:
     cfo = _clean_text(sheet[f"B{row_idx}"].value)
-    level = _clean_text(sheet[f"D{row_idx}"].value)
-    kind = _clean_text(sheet[f"G{row_idx}"].value)
-    comment = _clean_text(sheet[f"H{row_idx}"].value)
-    project = _clean_text(sheet[f"J{row_idx}"].value)
+    level_raw = sheet[f"D{row_idx}"].value
+    level = _clean_text(level_raw)
+    kind_cell = sheet[f"G{row_idx}"].value
+    comment_cell = sheet[f"H{row_idx}"].value
+
+    kind = "" if _is_formula(kind_cell) else _clean_text(kind_cell)
+    comment = "" if _is_formula(comment_cell) else _clean_text(comment_cell)
+
+    project_val = sheet[f"J{row_idx}"].value
+    project = "" if _is_formula(project_val) else _clean_text(project_val)
 
     if cfo and not level and not kind and not comment and not project:
         return "cfo_total"
-    if cfo and level and not kind and not comment and not project:
-        return "level_total"
-    if cfo and level:
+
+    reserve_level = _is_reserve_sheet_level_cell(level_raw)
+
+    if cfo and reserve_level:
+        f_val = sheet[f"F{row_idx}"].value
+        if _is_formula(f_val):
+            return "level_total"
+        if not kind and not comment and not project:
+            return "level_total"
         return "detail"
     return "other"
 
@@ -1530,26 +1670,85 @@ def _parse_column_reference(value: Any) -> int:
         raise ConfigError(f"Некорректная ссылка на колонку: '{value}'.") from exc
 
 
+def _normalize_numeric_string(value: Any) -> str:
+    text = str(value).strip()
+    text = text.replace("\u00a0", "").replace("\u2009", "")
+    text = "".join(text.split()) if text else text
+    if text.startswith("="):
+        text = text[1:].strip().replace("\u00a0", "")
+        text = "".join(text.split()) if text else text
+    return text.replace(",", ".")
+
+
+def _coerce_float_from_normalized(text: str) -> float | None:
+    if not text:
+        return 0.0
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    if text.count("/") != 1:
+        return None
+    num_s, den_s = text.split("/", 1)
+    if not num_s or not den_s:
+        return None
+    try:
+        numerator = float(num_s)
+        denominator = float(den_s)
+    except ValueError:
+        return None
+    if denominator == 0:
+        logger.warning(
+            "Деление на ноль в текстовом значении (игнор → 0): числитель=%r знаменатель=%r",
+            num_s,
+            den_s,
+        )
+        return 0.0
+    result = numerator / denominator
+    logger.debug(
+        "Дробь из текста: %r → %s / %s = %s",
+        text,
+        numerator,
+        denominator,
+        result,
+    )
+    return float(result)
+
+
 def _to_number(value: Any) -> float:
     if value in (None, ""):
         return 0.0
+    if isinstance(value, bool):
+        return float(value)
     if isinstance(value, (int, float)):
         return float(value)
 
-    text = str(value).strip().replace(" ", "").replace(",", ".")
-    if not text:
+    normalized = _normalize_numeric_string(value)
+    if not normalized:
         return 0.0
 
-    try:
-        return float(text)
-    except ValueError as exc:
-        raise ConfigError(f"Значение '{value}' нельзя привести к числу.") from exc
+    coerced = _coerce_float_from_normalized(normalized)
+    if coerced is not None:
+        return coerced
+
+    logger.warning(
+        "Не удалось привести к числу: repr=%r type=%s нормализовано=%r len=%s",
+        value,
+        type(value).__name__,
+        normalized,
+        len(str(value)),
+    )
+    raise ConfigError(
+        "Значение нельзя привести к числу. Допустимы: число, число с запятой как разделителем, "
+        "или одна дробь вида «число/число» (например 30246396.08/1.22 для суммы без НДС). "
+        f"Получено: {value!r}."
+    )
 
 
 def _normalize_key(value: Any) -> str:
     if value is None:
         return ""
-    text = str(value).strip()
+    text = str(value).replace("\u00a0", " ").replace("\u2009", " ").strip()
     if not text:
         return ""
     return " ".join(text.lower().replace("ё", "е").split())

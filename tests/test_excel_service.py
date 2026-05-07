@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from io import BytesIO
 
+import pytest
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
 
-from app.excel_service import consolidate_workbooks
+from app.excel_service import ConfigError, _to_number, consolidate_workbooks
 
 
 def test_preserves_row_dimensions_for_existing_and_new_reserve_rows() -> None:
@@ -270,6 +271,58 @@ def _build_config(*, include_cfo: bool) -> dict[str, object]:
         },
         "pages": [page],
     }
+
+
+def test_to_number_accepts_text_ratio_and_spaced_numeric() -> None:
+    expected = 30246396.08 / 1.22
+    assert abs(_to_number("30246396.08/1.22") - expected) < 1e-6
+    assert abs(_to_number("=30246396.08/1.22") - expected) < 1e-6
+    assert abs(_to_number("30 246 396,08/1,22") - expected) < 1e-6
+
+
+def test_to_number_rejects_invalid_with_config_error() -> None:
+    with pytest.raises(ConfigError):
+        _to_number("abc/def")
+
+
+def test_new_sample_1xlsx_collects_only_detail_rows_skips_itogo() -> None:
+    """Строка «ИТОГО» в колонке проекта не попадает в записи (нет ЦФО/уровня) — по дизайну."""
+
+    from app.config import ROOT_DIR, load_app_config
+    from openpyxl import load_workbook
+
+    from app.excel_service import _collect_source_records
+
+    sample = ROOT_DIR / "Файлы" / "new" / "1.xlsx"
+    if not sample.exists():
+        pytest.skip("Нет Файлы/new/1.xlsx")
+
+    cfg = load_app_config()
+    page = cfg["pages"][0]
+    preset = cfg["source_cols_preset"][page["source_preset"]]
+    wb = load_workbook(sample, data_only=True)
+
+    records = _collect_source_records(
+        [(sample.name, wb)],
+        page["source_sheet"],
+        preset,
+        header_row=int(page.get("source_header_row", 2)),
+        start_row=int(page.get("source_start_row", 3)),
+        type_map=page.get("type_map"),
+        page_name=str(page.get("name", "page")),
+    )
+
+    assert not any(
+        str(r.get("project") or "").strip().upper() == "ИТОГО" for r in records
+    )
+    assert len(records) >= 1
+    by_project = {str(r["project"]).strip(): r for r in records}
+    row1 = by_project.get("1") or by_project.get("Проект 1")
+    assert row1 is not None
+    assert row1["cfo"] == "Строители"
+    assert row1["level"] == "РП"
+    assert row1["type"] == "Идеологическое изменение"
+    assert abs(row1["amount"] - 24792127.93442623) < 1e-3
 
 
 def _dump_book(workbook: Workbook) -> bytes:

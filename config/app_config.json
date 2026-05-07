@@ -1,9 +1,10 @@
 {
-  "default_template_path": "Файлы/Шаблон ВСР.xlsm",
+  "default_template_path": "Файлы/new/Шаблон.xlsm",
   "source_cols_preset": {
     "default": {
       "project": {
-        "header": "Проект"
+        "header": "Проект",
+        "header_aliases": ["Наименование проекта", " Наименование проекта"]
       },
       "cfo": {
         "header": "ЦФО"
@@ -34,7 +35,9 @@
           "Остаток резеррва",
           "Остаток резеррва ",
           "Остаток резерва",
-          "Остаток резерва "
+          "Остаток резерва ",
+          "Остаток от резерва",
+          "Остаток от резерва "
         ]
       },
       "level": {
@@ -55,7 +58,7 @@
       "template_sheet": "Справка по резервам ",
       "helper_sheet": "Справка",
       "helper_start_row": 301,
-      "template_start_row": 7,
+      "template_start_row": 9,
       "source_sheet": "Вскрытие резервов",
       "source_preset": "default",
       "source_header_row": 0,
@@ -91,7 +94,18 @@
         "FCE4D6",
         "FFF2CC",
         "E4DFEC"
-      ]
+      ],
+      "reserve_header_sync": {
+        "enabled": true,
+        "approved_reserves_merge_substring": "Утвержденные резервы",
+        "plan_row_label_substring": "План по ПД с резервами",
+        "project_summary_column": "B"
+      },
+      "preserve_reserve_sector_gap": {
+        "enabled": true,
+        "source_row_first": 33,
+        "source_row_last": 37
+      }
     }
   ]
 }
